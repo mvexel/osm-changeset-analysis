@@ -10,7 +10,7 @@ from pymongo import MongoClient
 
 BASEDIR = "/Users/martijnv/osm/planet/changesets"
 AREATHRESHOLD = 0.25  # changesets larger than this will be ignored (deg^2)
-VERBOSITY = 1000  # integer, higher is less verbose
+BULK_SIZE = 100000  # number of documents to insert at once.
 SPATIALMATCH = "within"  # within or intersects, determines
 SESSIONID = uuid.uuid4()
 
@@ -49,10 +49,10 @@ if __name__ == "__main__":
             if name.endswith('.bz2'):
                 f = bz2file.open(os.path.join(root, name), 'rb')
                 i += 1
+                docs = []
                 try:
                     for event, elem in ET.iterparse(f):
                         if elem.tag == "changeset":
-                            print elem.items()
                             # check if changeset has bbox metadata (is not empty)
                             if all(k in elem.attrib for k in ('min_lat', 'max_lat', 'min_lon', 'max_lon')):
                                 min_lat = float(elem.attrib['min_lat'])
@@ -61,33 +61,39 @@ if __name__ == "__main__":
                                 max_lon = float(elem.attrib['max_lon'])
                                 bbox = box(min_lon, min_lat, max_lon, max_lat)
                                 # send output to stdout
-                                if not i % VERBOSITY:
+                                if not i % BULK_SIZE:
                                     sys.stdout.write('.')
                                     sys.stdout.flush()
                                 if intersects(bbox) and bbox.area < AREATHRESHOLD:
                                     j += 1
                                     thousands = os.path.basename(
                                         os.path.normpath(root))
-                                    seq = int(thousands + name.partition('.')[0])
-                                    # update metadata collection with highest
-                                    # changeset count
-                                    if j == 1:
-                                        metacollection.update(
-                                            {'collection': 'changesets'},
-                                            {'uuid': SESSIONID,
-                                                'highest': seq,
-                                                'date': datetime.now()},
-                                            upsert=True)
-                                    changesetcollection.insert(
-                                        dict(elem.attrib, **{'seq': seq}))
+                                    seq = 0
+                                    try:
+                                        seq = int(thousands + name.partition('.')[0])
+                                        # update metadata collection with highest
+                                        # changeset count
+                                        if j == 1:
+                                            metacollection.update(
+                                                {'collection': 'changesets'},
+                                                {'uuid': SESSIONID,
+                                                    'highest': seq,
+                                                    'date': datetime.now()},
+                                                upsert=True)
+                                    except ValueError:
+                                        # initial load
+                                        pass
+                                    docs.append(dict(elem.attrib, **{'seq': seq}))
                                     # send output to stdout
-                                    if not j % VERBOSITY:
+                                    if not j % BULK_SIZE:
+                                        changesetcollection.insert(docs)
+                                        del docs[:]
                                         sys.stdout.write('o')
                                         sys.stdout.flush()
                             else:
                                 k += 1
                                 # send output to stdout
-                                if not k % VERBOSITY:
+                                if not k % BULK_SIZE:
                                     sys.stdout.write('_')
                                     sys.stdout.flush()
                             elem.clear()
