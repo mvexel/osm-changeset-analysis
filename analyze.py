@@ -6,9 +6,9 @@ from datetime import datetime
 import uuid
 import xml.etree.cElementTree as ET
 from shapely.geometry import box
-from pymongo import Connection
+from pymongo import MongoClient
 
-BASEDIR = "/home/mvexel/osm/changesets/changesets/"
+BASEDIR = "/Users/martijnv/osm/planet/changesets"
 AREATHRESHOLD = 0.25  # changesets larger than this will be ignored (deg^2)
 VERBOSITY = 1000  # integer, higher is less verbose
 SPATIALMATCH = "within"  # within or intersects, determines
@@ -34,8 +34,8 @@ def intersects(bbox):
 
 if __name__ == "__main__":
     # mongo init
-    conn = Connection()
-    db = conn.changesets
+    client = MongoClient("mongodb://mvexel:^5PmT2OYe6z*nVCi@ds039860.mongolab.com:39860/changesets")
+    db = client.changesets
     changesetcollection = db.changesets
     metacollection = db.meta
     # counters
@@ -50,53 +50,52 @@ if __name__ == "__main__":
                 f = bz2file.open(os.path.join(root, name), 'rb')
                 i += 1
                 try:
-                    tree = ET.parse(f)
+                    for event, elem in ET.iterparse(f):
+                        if elem.tag == "changeset":
+                            print elem.items()
+                            # check if changeset has bbox metadata (is not empty)
+                            if all(k in elem.attrib for k in ('min_lat', 'max_lat', 'min_lon', 'max_lon')):
+                                min_lat = float(elem.attrib['min_lat'])
+                                min_lon = float(elem.attrib['min_lon'])
+                                max_lat = float(elem.attrib['max_lat'])
+                                max_lon = float(elem.attrib['max_lon'])
+                                bbox = box(min_lon, min_lat, max_lon, max_lat)
+                                # send output to stdout
+                                if not i % VERBOSITY:
+                                    sys.stdout.write('.')
+                                    sys.stdout.flush()
+                                if intersects(bbox) and bbox.area < AREATHRESHOLD:
+                                    j += 1
+                                    thousands = os.path.basename(
+                                        os.path.normpath(root))
+                                    seq = int(thousands + name.partition('.')[0])
+                                    # update metadata collection with highest
+                                    # changeset count
+                                    if j == 1:
+                                        metacollection.update(
+                                            {'collection': 'changesets'},
+                                            {'uuid': SESSIONID,
+                                                'highest': seq,
+                                                'date': datetime.now()},
+                                            upsert=True)
+                                    changesetcollection.insert(
+                                        dict(elem.attrib, **{'seq': seq}))
+                                    # send output to stdout
+                                    if not j % VERBOSITY:
+                                        sys.stdout.write('o')
+                                        sys.stdout.flush()
+                            else:
+                                k += 1
+                                # send output to stdout
+                                if not k % VERBOSITY:
+                                    sys.stdout.write('_')
+                                    sys.stdout.flush()
+                            elem.clear()
                 except ET.ParseError:
                     sys.stdout.write('x')
                     sys.stdout.flush()
-                for changeset in tree.getroot().findall('changeset'):
-                    # chec if changeset has bbox metadata (is not empty)
-                    if not set('min_lat',
-                               'max_lat',
-                               'min_lon',
-                               'max_lon').isdisjoint(changeset.attrib):
-                        min_lat = float(changeset.attrib['min_lat'])
-                        min_lon = float(changeset.attrib['min_lon'])
-                        max_lat = float(changeset.attrib['max_lat'])
-                        max_lon = float(changeset.attrib['max_lon'])
-                        bbox = box(min_lon, min_lat, max_lon, max_lat)
-                        # send output to stdout
-                        if not i % VERBOSITY:
-                            sys.stdout.write('.')
-                            sys.stdout.flush()
-                        if intersects(bbox) and bbox.area < AREATHRESHOLD:
-                            j += 1
-                            thousands = os.path.basename(
-                                os.path.normpath(root))
-                            seq = int(thousands + name.partition('.')[0])
-                            # update metadata collection with highest
-                            # changeset count
-                            if j == 1:
-                                metacollection.update(
-                                    {'collection': 'changesets'},
-                                    {'uuid': SESSIONID,
-                                        'highest': seq,
-                                        'date': datetime.now()},
-                                    upsert=True)
-                            changesetcollection.insert(
-                                dict(changeset.attrib, **{'seq': seq}))
-                            # send output to stdout
-                            if not j % VERBOSITY:
-                                sys.stdout.write('o')
-                                sys.stdout.flush()
-                    else:
-                        k += 1
-                        # send output to stdout
-                        if not k % VERBOSITY:
-                            sys.stdout.write('_')
-                            sys.stdout.flush()
     metacollection.update(
         {'uuid': SESSIONID},
         {'fullrun': True},
         upsert=True)
-    conn.close()
+    del client
